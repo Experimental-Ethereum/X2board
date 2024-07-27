@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Services;
 
 use App\Models\CommissionLog;
@@ -24,9 +25,13 @@ class StatisticalService
     {
         ini_set('memory_limit', -1);
         $this->redis = Redis::connection();
-
     }
 
+    /**
+     * Set the start timestamp for statistics.
+     *
+     * @param int $timestamp
+     */
     public function setStartAt($timestamp)
     {
         $this->startAt = $timestamp;
@@ -34,89 +39,80 @@ class StatisticalService
         $this->statUserKey = "stat_user_{$this->startAt}";
     }
 
+    /**
+     * Set the end timestamp for statistics.
+     *
+     * @param int $timestamp
+     */
     public function setEndAt($timestamp)
     {
         $this->endAt = $timestamp;
     }
 
     /**
-     * 生成统计报表
+     * Generate statistical data.
+     *
+     * @return array
      */
     public function generateStatData(): array
     {
-        $startAt = $this->startAt;
-        $endAt = $this->endAt;
-        if (!$startAt || !$endAt) {
-            $startAt = strtotime(date('Y-m-d'));
-            $endAt = strtotime('+1 day', $startAt);
-        }
-        $data = [];
-        $data['order_count'] = Order::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->count();
-        $data['order_total'] = Order::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->sum('total_amount');
-        $data['paid_count'] = Order::where('paid_at', '>=', $startAt)
-            ->where('paid_at', '<', $endAt)
-            ->whereNotIn('status', [0, 2])
-            ->count();
-        $data['paid_total'] = Order::where('paid_at', '>=', $startAt)
-            ->where('paid_at', '<', $endAt)
-            ->whereNotIn('status', [0, 2])
-            ->sum('total_amount');
-        $commissionLogBuilder = CommissionLog::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt);
-        $data['commission_count'] = $commissionLogBuilder->count();
-        $data['commission_total'] = $commissionLogBuilder->sum('get_amount');
-        $data['register_count'] = User::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->count();
-        $data['invite_count'] = User::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->whereNotNull('invite_user_id')
-            ->count();
-        $data['transfer_used_total'] = StatServer::where('created_at', '>=', $startAt)
-            ->where('created_at', '<', $endAt)
-            ->select(DB::raw('SUM(u) + SUM(d) as total'))
-            ->value('total') ?? 0;
-        return $data;
+        $startAt = $this->startAt ?? strtotime(date('Y-m-d'));
+        $endAt = $this->endAt ?? strtotime('+1 day', $startAt);
+
+        return [
+            'order_count' => $this->countOrders($startAt, $endAt),
+            'order_total' => $this->sumOrders($startAt, $endAt),
+            'paid_count' => $this->countPaidOrders($startAt, $endAt),
+            'paid_total' => $this->sumPaidOrders($startAt, $endAt),
+            'commission_count' => $this->countCommissions($startAt, $endAt),
+            'commission_total' => $this->sumCommissions($startAt, $endAt),
+            'register_count' => $this->countRegistrations($startAt, $endAt),
+            'invite_count' => $this->countInvites($startAt, $endAt),
+            'transfer_used_total' => $this->sumTransferUsed($startAt, $endAt)
+        ];
     }
 
     /**
-     * 往服务器报表缓存正追加流量使用数据
+     * Increment server statistics for traffic usage.
+     *
+     * @param int $serverId
+     * @param string $serverType
+     * @param int $u
+     * @param int $d
      */
     public function statServer($serverId, $serverType, $u, $d)
     {
-        $u_menber = "{$serverType}_{$serverId}_u"; //储存上传流量的集合成员
-        $d_menber = "{$serverType}_{$serverId}_d"; //储存下载流量的集合成员
-        $this->redis->zincrby($this->statServerKey, $u, $u_menber);
-        $this->redis->zincrby($this->statServerKey, $d, $d_menber);
+        $this->redis->zincrby($this->statServerKey, $u, "{$serverType}_{$serverId}_u");
+        $this->redis->zincrby($this->statServerKey, $d, "{$serverType}_{$serverId}_d");
     }
 
     /**
-     * 追加用户使用流量
+     * Increment user statistics for traffic usage.
+     *
+     * @param float $rate
+     * @param int $userId
+     * @param int $u
+     * @param int $d
      */
     public function statUser($rate, $userId, $u, $d)
     {
-        $u_menber = "{$rate}_{$userId}_u"; //储存上传流量的集合成员
-        $d_menber = "{$rate}_{$userId}_d"; //储存下载流量的集合成员
-        $this->redis->zincrby($this->statUserKey, $u, $u_menber);
-        $this->redis->zincrby($this->statUserKey, $d, $d_menber);
+        $this->redis->zincrby($this->statUserKey, $u, "{$rate}_{$userId}_u");
+        $this->redis->zincrby($this->statUserKey, $d, "{$rate}_{$userId}_d");
     }
 
     /**
-     * 获取指定用户的流量使用情况
+     * Get user statistics by user ID.
+     *
+     * @param int $userId
+     * @return array
      */
     public function getStatUserByUserID($userId): array
     {
-
         $stats = [];
         $statsUser = $this->redis->zrange($this->statUserKey, 0, -1, true);
         foreach ($statsUser as $member => $value) {
             list($rate, $uid, $type) = explode('_', $member);
-            if ($uid !== $userId)
-                continue;
+            if ($uid !== $userId) continue;
             $key = "{$rate}_{$uid}";
             $stats[$key] = $stats[$key] ?? [
                 'record_at' => $this->startAt,
@@ -131,9 +127,11 @@ class StatisticalService
     }
 
     /**
-     * 获取缓存中的用户报表
+     * Get cached user statistics.
+     *
+     * @return array
      */
-    public function getStatUser()
+    public function getStatUser(): array
     {
         $stats = [];
         $statsUser = $this->redis->zrange($this->statUserKey, 0, -1, true);
@@ -152,33 +150,31 @@ class StatisticalService
         return array_values($stats);
     }
 
-
     /**
-     * 获取缓存中的服务器爆表
+     * Get cached server statistics.
+     *
+     * @return array
      */
-    public function getStatServer()
+    public function getStatServer(): array
     {
         $stats = [];
         $statsServer = $this->redis->zrange($this->statServerKey, 0, -1, true);
         foreach ($statsServer as $member => $value) {
             list($serverType, $serverId, $type) = explode('_', $member);
             $key = "{$serverType}_{$serverId}";
-            if (!isset($stats[$key])) {
-                $stats[$key] = [
-                    'server_id' => intval($serverId),
-                    'server_type' => $serverType,
-                    'u' => 0,
-                    'd' => 0,
-                ];
-            }
+            $stats[$key] = $stats[$key] ?? [
+                'server_id' => intval($serverId),
+                'server_type' => $serverType,
+                'u' => 0,
+                'd' => 0,
+            ];
             $stats[$key][$type] += $value;
         }
         return array_values($stats);
-
     }
 
     /**
-     * 清除用户报表缓存数据
+     * Clear cached user statistics.
      */
     public function clearStatUser()
     {
@@ -186,120 +182,153 @@ class StatisticalService
     }
 
     /**
-     * 清除服务器报表缓存数据
+     * Clear cached server statistics.
      */
     public function clearStatServer()
     {
         $this->redis->del($this->statServerKey);
     }
 
+    /**
+     * Get statistical records for a specific type.
+     *
+     * @param string $type
+     * @return mixed
+     */
     public function getStatRecord($type)
     {
         switch ($type) {
-            case "paid_total": {
-                return Stat::select([
-                    '*',
-                    DB::raw('paid_total / 100 as paid_total')
-                ])
-                    ->where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
+            case 'paid_total':
+                return Stat::select(['*', DB::raw('paid_total / 100 as paid_total')])
+                    ->whereBetween('record_at', [$this->startAt, $this->endAt])
                     ->orderBy('record_at', 'ASC')
                     ->get();
-            }
-            case "commission_total": {
-                return Stat::select([
-                    '*',
-                    DB::raw('commission_total / 100 as commission_total')
-                ])
-                    ->where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
+            case 'commission_total':
+                return Stat::select(['*', DB::raw('commission_total / 100 as commission_total')])
+                    ->whereBetween('record_at', [$this->startAt, $this->endAt])
                     ->orderBy('record_at', 'ASC')
                     ->get();
-            }
-            case "register_count": {
-                return Stat::where('record_at', '>=', $this->startAt)
-                    ->where('record_at', '<', $this->endAt)
+            case 'register_count':
+                return Stat::whereBetween('record_at', [$this->startAt, $this->endAt])
                     ->orderBy('record_at', 'ASC')
                     ->get();
-            }
+            default:
+                return null;
         }
     }
 
+    /**
+     * Get ranking data for a specific type.
+     *
+     * @param string $type
+     * @param int $limit
+     * @return mixed
+     */
     public function getRanking($type, $limit = 20)
     {
         switch ($type) {
-            case 'server_traffic_rank': {
+            case 'server_traffic_rank':
                 return $this->buildServerTrafficRank($limit);
-            }
-            case 'user_consumption_rank': {
+            case 'user_consumption_rank':
                 return $this->buildUserConsumptionRank($limit);
-            }
-            case 'invite_rank': {
+            case 'invite_rank':
                 return $this->buildInviteRank($limit);
-            }
+            default:
+                return null;
         }
     }
 
     private function buildInviteRank($limit)
     {
-        $stats = User::select([
-            'invite_user_id',
-            DB::raw('count(*) as count')
-        ])
-            ->where('created_at', '>=', $this->startAt)
-            ->where('created_at', '<', $this->endAt)
+        $stats = User::select(['invite_user_id', DB::raw('count(*) as count')])
+            ->whereBetween('created_at', [$this->startAt, $this->endAt])
             ->whereNotNull('invite_user_id')
             ->groupBy('invite_user_id')
             ->orderBy('count', 'DESC')
             ->limit($limit)
             ->get();
 
-        $users = User::whereIn('id', $stats->pluck('invite_user_id')->toArray())->get()->keyBy('id');
+        $users = User::whereIn('id', $stats->pluck('invite_user_id'))->get()->keyBy('id');
         foreach ($stats as $k => $v) {
-            if (!isset($users[$v['invite_user_id']]))
-                continue;
-            $stats[$k]['email'] = $users[$v['invite_user_id']]['email'];
+            $stats[$k]['email'] = $users[$v['invite_user_id']]['email'] ?? null;
         }
         return $stats;
     }
 
     private function buildUserConsumptionRank($limit)
     {
-        $stats = StatUser::select([
-            'user_id',
-            DB::raw('sum(u) as u'),
-            DB::raw('sum(d) as d'),
-            DB::raw('sum(u) + sum(d) as total')
-        ])
-            ->where('record_at', '>=', $this->startAt)
-            ->where('record_at', '<', $this->endAt)
+        $stats = StatUser::select(['user_id', DB::raw('sum(u) as u'), DB::raw('sum(d) as d'), DB::raw('sum(u) + sum(d) as total')])
+            ->whereBetween('record_at', [$this->startAt, $this->endAt])
             ->groupBy('user_id')
             ->orderBy('total', 'DESC')
             ->limit($limit)
             ->get();
-        $users = User::whereIn('id', $stats->pluck('user_id')->toArray())->get()->keyBy('id');
+
+        $users = User::whereIn('id', $stats->pluck('user_id'))->get()->keyBy('id');
         foreach ($stats as $k => $v) {
-            if (!isset($users[$v['user_id']]))
-                continue;
-            $stats[$k]['email'] = $users[$v['user_id']]['email'];
+            $stats[$k]['email'] = $users[$v['user_id']]['email'] ?? null;
         }
         return $stats;
     }
 
     private function buildServerTrafficRank($limit)
     {
-        return StatServer::select([
-            'server_id',
-            'server_type',
-            DB::raw('sum(u) as u'),
-            DB::raw('sum(d) as d'),
-            DB::raw('sum(u) + sum(d) as total')
-        ])
-            ->where('record_at', '>=', $this->startAt)
-            ->where('record_at', '<', $this->endAt)
+        return StatServer::select(['server_id', 'server_type', DB::raw('sum(u) as u'), DB::raw('sum(d) as d'), DB::raw('sum(u) + sum(d) as total')])
+            ->whereBetween('record_at', [$this->startAt, $this->endAt])
             ->groupBy('server_id', 'server_type')
             ->orderBy('total', 'DESC')
             ->limit($limit)
             ->get();
+    }
+
+    private function countOrders($startAt, $endAt)
+    {
+        return Order::whereBetween('created_at', [$startAt, $endAt])->count();
+    }
+
+    private function sumOrders($startAt, $endAt)
+    {
+        return Order::whereBetween('created_at', [$startAt, $endAt])->sum('total_amount');
+    }
+
+    private function countPaidOrders($startAt, $endAt)
+    {
+        return Order::whereBetween('paid_at', [$startAt, $endAt])
+            ->whereNotIn('status', [0, 2])
+            ->count();
+    }
+
+    private function sumPaidOrders($startAt, $endAt)
+    {
+        return Order::whereBetween('paid_at', [$startAt, $endAt])
+            ->whereNotIn('status', [0, 2])
+            ->sum('total_amount');
+    }
+
+    private function countCommissions($startAt, $endAt)
+    {
+        return CommissionLog::whereBetween('created_at', [$startAt, $endAt])->count();
+    }
+
+    private function sumCommissions($startAt, $endAt)
+    {
+        return CommissionLog::whereBetween('created_at', [$startAt, $endAt])->sum('get_amount');
+    }
+
+    private function countRegistrations($startAt, $endAt)
+    {
+        return User::whereBetween('created_at', [$startAt, $endAt])->count();
+    }
+
+    private function countInvites($startAt, $endAt)
+    {
+        return User::whereBetween('created_at', [$startAt, $endAt])->whereNotNull('invite_user_id')->count();
+    }
+
+    private function sumTransferUsed($startAt, $endAt)
+    {
+        return StatServer::whereBetween('created_at', [$startAt, $endAt])
+            ->select(DB::raw('SUM(u) + SUM(d) as total'))
+            ->value('total') ?? 0;
     }
 }
