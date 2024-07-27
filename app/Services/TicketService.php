@@ -1,6 +1,6 @@
 <?php
-namespace App\Services;
 
+namespace App\Services;
 
 use App\Exceptions\ApiException;
 use App\Jobs\SendEmailJob;
@@ -10,68 +10,70 @@ use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
-class TicketService {
+class TicketService
+{
     public function reply($ticket, $message, $userId)
     {
-        try{
+        try {
             DB::beginTransaction();
             $ticketMessage = TicketMessage::create([
                 'user_id' => $userId,
                 'ticket_id' => $ticket->id,
                 'message' => $message
             ]);
-            if ($userId !== $ticket->user_id) {
-                $ticket->reply_status = Ticket::STATUS_OPENING;
-            } else {
-                $ticket->reply_status = Ticket::STATUS_CLOSED;
-            }
+
+            $ticket->reply_status = $userId !== $ticket->user_id ? Ticket::STATUS_OPENING : Ticket::STATUS_CLOSED;
+
             if (!$ticketMessage || !$ticket->save()) {
                 throw new \Exception();
             }
+
             DB::commit();
             return $ticketMessage;
-        }catch(\Exception $e){
+        } catch (\Exception $e) {
             DB::rollback();
             return false;
         }
     }
 
-    public function replyByAdmin($ticketId, $message, $userId):void
+    public function replyByAdmin($ticketId, $message, $userId): void
     {
-        $ticket = Ticket::where('id', $ticketId)
-            ->first();
+        $ticket = Ticket::find($ticketId);
+
         if (!$ticket) {
             throw new ApiException('工单不存在');
         }
+
         $ticket->status = Ticket::STATUS_OPENING;
-        try{
+
+        try {
             DB::beginTransaction();
             $ticketMessage = TicketMessage::create([
                 'user_id' => $userId,
                 'ticket_id' => $ticket->id,
                 'message' => $message
             ]);
-            if ($userId !== $ticket->user_id) {
-                $ticket->reply_status = Ticket::STATUS_OPENING;
-            } else {
-                $ticket->reply_status = Ticket::STATUS_CLOSED;
-            }
+
+            $ticket->reply_status = $userId !== $ticket->user_id ? Ticket::STATUS_OPENING : Ticket::STATUS_CLOSED;
+
             if (!$ticketMessage || !$ticket->save()) {
                 throw new ApiException('工单回复失败');
             }
+
             DB::commit();
-        }catch(\Exception $e){
+        } catch (\Exception $e) {
             DB::rollBack();
             throw $e;
         }
+
         $this->sendEmailNotify($ticket, $ticketMessage);
     }
 
-    // 半小时内不再重复通知
     private function sendEmailNotify(Ticket $ticket, TicketMessage $ticketMessage)
     {
         $user = User::find($ticket->user_id);
         $cacheKey = 'ticket_sendEmailNotify_' . $ticket->user_id;
+
         if (!Cache::get($cacheKey)) {
             Cache::put($cacheKey, 1, 1800);
             SendEmailJob::dispatch([
