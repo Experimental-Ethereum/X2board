@@ -43,15 +43,14 @@ class AuthService
         try {
             if (!Cache::has($jwt)) {
                 $data = (array)JWT::decode($jwt, new Key(config('app.key'), 'HS256'));
-                if (!self::checkSession($data['id'], $data['session'])) return false;
-                $user = User::select([
-                    'id',
-                    'email',
-                    'is_admin',
-                    'is_staff'
-                ])
+                if (!self::checkSession($data['id'], $data['session'])) {
+                    return false;
+                }
+                $user = User::select(['id', 'email', 'is_admin', 'is_staff'])
                     ->find($data['id']);
-                if (!$user) return false;
+                if (!$user) {
+                    return false;
+                }
                 Cache::put($jwt, $user->toArray(), 3600);
             }
             return Cache::get($jwt);
@@ -63,8 +62,7 @@ class AuthService
     private static function checkSession($userId, $session)
     {
         $sessions = (array)Cache::get(CacheKey::get("USER_SESSIONS", $userId)) ?? [];
-        if (!in_array($session, array_keys($sessions))) return false;
-        return true;
+        return in_array($session, array_keys($sessions));
     }
 
     private static function addSession($userId, $guid, $meta)
@@ -72,11 +70,7 @@ class AuthService
         $cacheKey = CacheKey::get("USER_SESSIONS", $userId);
         $sessions = (array)Cache::get($cacheKey, []);
         $sessions[$guid] = $meta;
-        if (!Cache::put(
-            $cacheKey,
-            $sessions
-        )) return false;
-        return true;
+        return Cache::put($cacheKey, $sessions);
     }
 
     public function getSessions()
@@ -89,11 +83,7 @@ class AuthService
         $cacheKey = CacheKey::get("USER_SESSIONS", $this->user->id);
         $sessions = (array)Cache::get($cacheKey, []);
         unset($sessions[$sessionId]);
-        if (!Cache::put(
-            $cacheKey,
-            $sessions
-        )) return false;
-        return true;
+        return Cache::put($cacheKey, $sessions);
     }
 
     public function removeAllSession()
