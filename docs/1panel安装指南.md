@@ -2,7 +2,7 @@
 
 # 1panel 部署教程
 
-本文将介绍如何使用 1panel 快速部署 Xboard。
+本文将介绍如何使用 1panel 快速部署 X2board。
 
 ## 安装部署
 
