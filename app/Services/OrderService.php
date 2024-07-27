@@ -278,4 +278,188 @@ class OrderService
         }
 
         $orderSurplusSecond = $expiredAtByOrder - time();
-        $orderRangeSecond = $expiredAtByOrder - $lastValidate
+        $orderRangeSecond = $expiredAtByOrder - $lastValidateAt;
+        $avgPrice = $orderAmountSum / $orderRangeSecond;
+        $order->surplus_amount = $avgPrice * $orderSurplusSecond;
+        $order->surplus_order_ids = array_column($orders, 'id');
+    }
+
+    /**
+     * Mark the order as paid and dispatch the handle job
+     */
+    public function paid(string $callbackNo)
+    {
+        $order = $this->order;
+        if ($order->status !== Order::STATUS_PENDING) {
+            return true;
+        }
+        $order->status = Order::STATUS_PROCESSING;
+        $order->paid_at = time();
+        $order->callback_no = $callbackNo;
+        if (!$order->save()) {
+            return false;
+        }
+        try {
+            OrderHandleJob::dispatchSync($order->trade_no);
+        } catch (\Exception $e) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Cancel the order and rollback any changes
+     */
+    public function cancel(): bool
+    {
+        $order = $this->order;
+        try {
+            DB::beginTransaction();
+            $order->status = Order::STATUS_CANCELLED;
+            if (!$order->save()) {
+                throw new \Exception('Failed to save order status.');
+            }
+            if ($order->balance_amount) {
+                $userService = new UserService();
+                if (!$userService->addBalance($order->user_id, $order->balance_amount)) {
+                    throw new \Exception('Failed to add balance.');
+                }
+            }
+            DB::commit();
+            return true;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error($e);
+            return false;
+        }
+    }
+
+    /**
+     * Set the user's speed limit based on the plan
+     */
+    private function setSpeedLimit($speedLimit)
+    {
+        $this->user->speed_limit = $speedLimit;
+    }
+
+    /**
+     * Reset user traffic data
+     */
+    private function buyByResetTraffic()
+    {
+        $this->user->u = 0;
+        $this->user->d = 0;
+    }
+
+    /**
+     * Process periodic purchase and update user data
+     */
+    private function buyByPeriod(Order $order, Plan $plan)
+    {
+        if ((int)$order->type === Order::TYPE_UPGRADE) {
+            $this->user->expired_at = time();
+        }
+        $this->user->transfer_enable = $plan->transfer_enable * 1073741824;
+        if ($this->user->expired_at === null) {
+            $this->buyByResetTraffic();
+        }
+        if ($order->type === Order::TYPE_NEW_PURCHASE) {
+            $this->buyByResetTraffic();
+        }
+        $this->user->plan_id = $plan->id;
+        $this->user->group_id = $plan->group_id;
+        $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);
+    }
+
+    /**
+     * Process one-time purchase and update user data
+     */
+    private function buyByOneTime(Plan $plan)
+    {
+        $this->buyByResetTraffic();
+        $this->user->transfer_enable = $plan->transfer_enable * 1073741824;
+        $this->user->plan_id = $plan->id;
+        $this->user->group_id = $plan->group_id;
+        $this->user->expired_at = null;
+    }
+
+    /**
+     * Calculate the new expiration time based on the order period
+     */
+    private function getTime($str, $timestamp)
+    {
+        if ($timestamp < time()) {
+            $timestamp = time();
+        }
+        switch ($str) {
+            case 'month_price':
+                return strtotime('+1 month', $timestamp);
+            case 'quarter_price':
+                return strtotime('+3 month', $timestamp);
+            case 'half_year_price':
+                return strtotime('+6 month', $timestamp);
+            case 'year_price':
+                return strtotime('+12 month', $timestamp);
+            case 'two_year_price':
+                return strtotime('+24 month', $timestamp);
+            case 'three_year_price':
+                return strtotime('+36 month', $timestamp);
+            default:
+                return $timestamp;
+        }
+    }
+
+    /**
+     * Trigger an event based on the event ID
+     */
+    private function openEvent($eventId)
+    {
+        switch ((int)$eventId) {
+            case 0:
+                break;
+            case 1:
+                $this->buyByResetTraffic();
+                break;
+        }
+    }
+
+    /**
+     * Apply additional customizations or actions required during order processing
+     */
+    private function applyCustomizations()
+    {
+        // Custom logic can be added here to extend the functionality
+    }
+
+    /**
+     * Handle additional services or products included in the order
+     */
+    private function handleAdditionalServices()
+    {
+        // Logic to handle additional services or products
+    }
+
+    /**
+     * Log the order details for audit and troubleshooting purposes
+     */
+    private function logOrderDetails()
+    {
+        Log::info('Order Details:', $this->order->toArray());
+    }
+
+    /**
+     * Notify the user about the order status via email or other channels
+     */
+    private function notifyUser()
+    {
+        // Logic to notify the user about the order status
+    }
+
+    /**
+     * Validate the order before processing to ensure all conditions are met
+     */
+    private function validateOrder()
+    {
+        // Logic to validate the order before processing
+    }
+}
