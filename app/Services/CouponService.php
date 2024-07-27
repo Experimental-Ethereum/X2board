@@ -21,26 +21,27 @@ class CouponService
             ->first();
     }
 
-    public function use(Order $order):bool
+    public function use(Order $order): bool
     {
         $this->setPlanId($order->plan_id);
         $this->setUserId($order->user_id);
         $this->setPeriod($order->period);
         $this->check();
-        switch ($this->coupon->type) {
-            case 1:
-                $order->discount_amount = $this->coupon->value;
-                break;
-            case 2:
-                $order->discount_amount = $order->total_amount * ($this->coupon->value / 100);
-                break;
+
+        $order->discount_amount = match($this->coupon->type) {
+            1 => $this->coupon->value,
+            2 => $order->total_amount * ($this->coupon->value / 100),
+            default => $order->discount_amount
+        };
+
+        $order->discount_amount = min($order->discount_amount, $order->total_amount);
+
+        if ($this->coupon->limit_use !== null && $this->coupon->limit_use <= 0) {
+            return false;
         }
-        if ($order->discount_amount > $order->total_amount) {
-            $order->discount_amount = $order->total_amount;
-        }
-        if ($this->coupon->limit_use !== NULL) {
-            if ($this->coupon->limit_use <= 0) return false;
-            $this->coupon->limit_use = $this->coupon->limit_use - 1;
+
+        if ($this->coupon->limit_use !== null) {
+            $this->coupon->limit_use -= 1;
             if (!$this->coupon->save()) {
                 return false;
             }
@@ -73,14 +74,13 @@ class CouponService
         $this->period = $period;
     }
 
-    public function checkLimitUseWithUser():bool
+    public function checkLimitUseWithUser(): bool
     {
         $usedCount = Order::where('coupon_id', $this->coupon->id)
             ->where('user_id', $this->userId)
             ->whereNotIn('status', [0, 2])
             ->count();
-        if ($usedCount >= $this->coupon->limit_use_with_user) return false;
-        return true;
+        return $usedCount < $this->coupon->limit_use_with_user;
     }
 
     public function check()
@@ -88,7 +88,7 @@ class CouponService
         if (!$this->coupon || !$this->coupon->show) {
             throw new ApiException(__('Invalid coupon'));
         }
-        if ($this->coupon->limit_use <= 0 && $this->coupon->limit_use !== NULL) {
+        if ($this->coupon->limit_use <= 0 && $this->coupon->limit_use !== null) {
             throw new ApiException(__('This coupon is no longer available'));
         }
         if (time() < $this->coupon->started_at) {
@@ -97,22 +97,16 @@ class CouponService
         if (time() > $this->coupon->ended_at) {
             throw new ApiException(__('This coupon has expired'));
         }
-        if ($this->coupon->limit_plan_ids && $this->planId) {
-            if (!in_array($this->planId, $this->coupon->limit_plan_ids)) {
-                throw new ApiException(__('The coupon code cannot be used for this subscription'));
-            }
+        if ($this->coupon->limit_plan_ids && $this->planId && !in_array($this->planId, $this->coupon->limit_plan_ids)) {
+            throw new ApiException(__('The coupon code cannot be used for this subscription'));
         }
-        if ($this->coupon->limit_period && $this->period) {
-            if (!in_array($this->period, $this->coupon->limit_period)) {
-                throw new ApiException(__('The coupon code cannot be used for this period'));
-            }
+        if ($this->coupon->limit_period && $this->period && !in_array($this->period, $this->coupon->limit_period)) {
+            throw new ApiException(__('The coupon code cannot be used for this period'));
         }
-        if ($this->coupon->limit_use_with_user !== NULL && $this->userId) {
-            if (!$this->checkLimitUseWithUser()) {
-                throw new ApiException(__('The coupon can only be used :limit_use_with_user per person', [
-                    'limit_use_with_user' => $this->coupon->limit_use_with_user
-                ]));
-            }
+        if ($this->coupon->limit_use_with_user !== null && $this->userId && !$this->checkLimitUseWithUser()) {
+            throw new ApiException(__('The coupon can only be used :limit_use_with_user per person', [
+                'limit_use_with_user' => $this->coupon->limit_use_with_user
+            ]));
         }
     }
 }
