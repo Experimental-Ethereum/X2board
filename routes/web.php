@@ -2,6 +2,7 @@
 
 use App\Services\ThemeService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 /*
 |--------------------------------------------------------------------------
@@ -20,33 +21,41 @@ Route::get('/', function (Request $request) {
             abort(403);
         }
     }
-    $renderParams = [
-        'title' => admin_setting('app_name', 'Xboard'),
-        'theme' => admin_setting('frontend_theme', 'Xboard'),
-        'version' => config('app.version'),
-        'description' => admin_setting('app_description', 'Xboard is best'),
-        'logo' => admin_setting('logo')
-    ];
+
+    $renderParams = Cache::remember('renderParams', 60, function() {
+        return [
+            'title' => admin_setting('app_name', 'Xboard'),
+            'theme' => admin_setting('frontend_theme', 'Xboard'),
+            'version' => config('app.version'),
+            'description' => admin_setting('app_description', 'Xboard is best'),
+            'logo' => admin_setting('logo')
+        ];
+    });
 
     if (!admin_setting("theme_{$renderParams['theme']}")) {
         $themeService = new ThemeService($renderParams['theme']);
         $themeService->init();
     }
 
-    $renderParams['theme_config'] = admin_setting("theme_". admin_setting('frontend_theme', 'Xboard')) ?? config('theme.' . admin_setting('frontend_theme', 'Xboard'));
+    $renderParams['theme_config'] = Cache::remember('theme_config', 60, function() use ($renderParams) {
+        return admin_setting("theme_". admin_setting('frontend_theme', 'Xboard')) ?? config('theme.' . admin_setting('frontend_theme', 'Xboard'));
+    });
+
     return view('theme::' . admin_setting('frontend_theme', 'Xboard') . '.dashboard', $renderParams);
 });
 
 //TODO:: 兼容
 Route::get('/' . admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))), function () {
-    return view('admin', [
-        'title' => admin_setting('app_name', 'XBoard'),
-        'theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),
-        'theme_header' => admin_setting('frontend_theme_header', 'dark'),
-        'theme_color' => admin_setting('frontend_theme_color', 'default'),
-        'background_url' => admin_setting('frontend_background_url'),
-        'version' => config('app.version'),
-        'logo' => admin_setting('logo'),
-        'secure_path' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))))
-    ]);
+    return Cache::remember('admin_view', 60, function() {
+        return view('admin', [
+            'title' => admin_setting('app_name', 'XBoard'),
+            'theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),
+            'theme_header' => admin_setting('frontend_theme_header', 'dark'),
+            'theme_color' => admin_setting('frontend_theme_color', 'default'),
+            'background_url' => admin_setting('frontend_background_url'),
+            'version' => config('app.version'),
+            'logo' => admin_setting('logo'),
+            'secure_path' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))))
+        ]);
+    });
 });
